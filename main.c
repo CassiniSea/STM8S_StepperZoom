@@ -4,20 +4,21 @@
  */
 
 #include "stm8s.h"
+#include "stdlib.h"
 
-#define BASEPROGRAMFREQUENCY 1
+#define BASEPROGRAMFREQUENCY 50
 #define TIM1STEPSTO1SECOND 32000
 #define MAXRPM 2
-#define CW 0
-#define CCW 1
+#define CW 0 // Positive
+#define CCW 1 // Negative
 
-float targetRpm = 0.5;
+float targetRpm = 0;
 float currentRpm = 0;
 uint8_t targetDir = CW;
 uint8_t currentDir = CW;
-int8_t targetSpeed = 0;
+int8_t targetSpeed = 1; // Main var
 int8_t currentSpeed = 0;
-
+float acc = 0.01;
 
 void uartTransmit(uint8_t data){
 	while(!UART1_SR_TXE);
@@ -28,12 +29,11 @@ uint8_t receive;
 @far @interrupt void uartReceive(void)	{
 	UART1_ClearITPendingBit(UART1_IT_RXNE);
 	receive=UART1_ReceiveData8();
+	targetSpeed = receive;
 	switch (receive)	{
 		case 1:
-			GPIO_WriteHigh(GPIOB, GPIO_PIN_5);
 		break;			
 		case 2:
-			GPIO_WriteLow(GPIOB, GPIO_PIN_5);
 		break;
 		case 3:
 		break;
@@ -58,16 +58,36 @@ uint8_t receive;
 
 @far @interrupt void tim2Update(void)	{
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
+	targetRpm = (float)abs(targetSpeed)*MAXRPM/127;
+	if(targetSpeed > 0) GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
+	else if(targetSpeed < 0) GPIO_WriteLow(GPIOC, GPIO_PIN_5);
+	if(currentRpm + acc <= targetRpm) currentRpm += acc;
+	else if(currentRpm - acc >= targetRpm) currentRpm -= acc;
+//	currentRpm = targetRpm;
+	if(currentRpm != 0) {
+		TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // Установить скорость мотора
+		TIM1_CtrlPWMOutputs(ENABLE); 
+	}
+	else
+		TIM1_CtrlPWMOutputs(DISABLE); 
+	
 
+}
+
+void Delay(uint32_t t)	{
+	uint16_t i;
+	while(t>0) {
+		t--;
+		for(i=1000;i>0;i--);
+	}
 }
 
 main()
 {
 	CLK_HSIPrescalerConfig(CLK_PRESCALER_HSIDIV1|CLK_PRESCALER_CPUDIV1);
 	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER1, ENABLE);
-	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER2, ENABLE);
 	GPIO_Init(GPIOB, GPIO_PIN_5, GPIO_MODE_OUT_PP_HIGH_FAST);
-	GPIO_Init(GPIOA, GPIO_PIN_1, GPIO_MODE_OUT_PP_HIGH_FAST);
+	GPIO_Init(GPIOC, GPIO_PIN_5, GPIO_MODE_OUT_PP_HIGH_FAST);
 	TIM1_DeInit();
 	TIM1_TimeBaseInit(	16000000/TIM1STEPSTO1SECOND,
 											TIM1_COUNTERMODE_UP,
@@ -80,7 +100,7 @@ main()
 								TIM1_OUTPUTSTATE_ENABLE,
 								TIM1_OUTPUTNSTATE_ENABLE,
 								200,
-								TIM1_OCPOLARITY_HIGH,
+								TIM1_OCPOLARITY_LOW,
 								TIM1_OCNPOLARITY_HIGH,
 								TIM1_OCIDLESTATE_RESET,
 								TIM1_OCNIDLESTATE_RESET);
@@ -105,6 +125,11 @@ main()
 	enableInterrupts();
 	
 	TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // Установить скорость мотора
-	
-	while (1);
+	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+	Delay(1000);
+	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+	while (1) {
+		if(targetSpeed > 0) targetDir = CW;
+		else if(targetSpeed < 0) targetDir = CCW;
+	}
 }
