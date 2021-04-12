@@ -61,7 +61,6 @@ Debug\main.o
 
 # Library list - section reserved for STVD
 #<BEGIN LIBRARY_FILES>
-libfs0.sm8
 libis0.sm8
 libm0.sm8
 #<END LIBRARY_FILES>

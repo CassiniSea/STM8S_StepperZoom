@@ -6,9 +6,10 @@
 #include "stm8s.h"
 #include "stdlib.h"
 
-#define BASEPROGRAMFREQUENCY 50
+#define BASEPROGRAMFREQUENCY 20
 #define TIM1STEPSTO1SECOND 32000
 #define MAXRPM 2
+#define MINRPM 0.01
 #define CW 0 // Positive
 #define CCW 1 // Negative
 
@@ -19,6 +20,8 @@ uint8_t currentDir = CW;
 int8_t targetSpeed = 1; // Main var
 int8_t currentSpeed = 0;
 float acc = 0.01;
+
+
 
 void uartTransmit(uint8_t data){
 	while(!UART1_SR_TXE);
@@ -56,22 +59,24 @@ uint8_t receive;
 
 }
 
+uint16_t timerReload;
 @far @interrupt void tim2Update(void)	{
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
+	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+	
 	targetRpm = (float)abs(targetSpeed)*MAXRPM/127;
 	if(targetSpeed > 0) GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
 	else if(targetSpeed < 0) GPIO_WriteLow(GPIOC, GPIO_PIN_5);
 	if(currentRpm + acc <= targetRpm) currentRpm += acc;
 	else if(currentRpm - acc >= targetRpm) currentRpm -= acc;
-//	currentRpm = targetRpm;
-	if(currentRpm != 0) {
+	
+	if(-MINRPM < currentRpm < MINRPM) {
+		TIM1_CtrlPWMOutputs(DISABLE); 
+	}
+	else {
 		TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // ”становить скорость мотора
 		TIM1_CtrlPWMOutputs(ENABLE); 
 	}
-	else
-		TIM1_CtrlPWMOutputs(DISABLE); 
-	
-
 }
 
 void Delay(uint32_t t)	{
@@ -93,8 +98,10 @@ main()
 											TIM1_COUNTERMODE_UP,
 											32000,
 											0);
+	TIM1_ARRPreloadConfig(ENABLE); // «агружать новое значение Autoreload при событии обновлени€, а не сразу
+	
 //	TIM1_SetAutoreload(uint16_t Autoreload)
-//	TIM1_PrescalerConfig(16000, TIM1_PSCRELOADMODE_UPDATE)
+//	TIM1_PrescalerConfig(16000, TIM1_PSCRELOADMODE_IMMEDIATE)
 
 	TIM1_OC1Init(	TIM1_OCMODE_PWM1,
 								TIM1_OUTPUTSTATE_ENABLE,
@@ -125,11 +132,10 @@ main()
 	enableInterrupts();
 	
 	TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // ”становить скорость мотора
+
 	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
 	Delay(1000);
 	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
-	while (1) {
-		if(targetSpeed > 0) targetDir = CW;
-		else if(targetSpeed < 0) targetDir = CCW;
-	}
+
+	while (1) {}
 }
