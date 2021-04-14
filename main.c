@@ -6,33 +6,38 @@
 #include "stm8s.h"
 #include "stdlib.h"
 
-#define BASEPROGRAMFREQUENCY 20
+#define BASEPROGRAMFREQUENCY 50
 #define TIM1STEPSTO1SECOND 32000
-#define MAXRPM 2
-#define MINRPM 0.01
+#define MOTORSTEPSPERROTATION 3200
+#define MAXPOSITION 16000
+#define MAXRPM 1
+#define MINRPM 1
 #define CW 0 // Positive
 #define CCW 1 // Negative
 
-float targetRpm = 0;
+float targetRpm = 60;
 float currentRpm = 0;
 uint8_t targetDir = CW;
 uint8_t currentDir = CW;
-int8_t targetSpeed = 1; // Main var
+int8_t targetSpeed = 0; // Main var
 int8_t currentSpeed = 0;
 float acc = 0.01;
 
-
+uint32_t position=0;
+uint32_t targetPosition=0;
+uint32_t timerReload;
+uint32_t motorSpeedK;
 
 void uartTransmit(uint8_t data){
 	while(!UART1_SR_TXE);
 	UART1->DR = data;
 }
 
-uint8_t receive;
+uint8_t receive = 0;
 @far @interrupt void uartReceive(void)	{
 	UART1_ClearITPendingBit(UART1_IT_RXNE);
 	receive=UART1_ReceiveData8();
-	targetSpeed = receive;
+	targetPosition = receive * 100;
 	switch (receive)	{
 		case 1:
 		break;			
@@ -54,37 +59,44 @@ uint8_t receive;
 	uartTransmit(receive);
 }
 
-@far @interrupt void tim1Update(void)	{
-	TIM1_ClearITPendingBit(TIM1_IT_UPDATE);
-
+void motorDisable(void) {
+	TIM1_Cmd(DISABLE);
+	GPIO_WriteHigh(GPIOC, GPIO_PIN_7);
 }
 
-uint16_t timerReload;
+void motorEnable(void) {
+	GPIO_WriteLow(GPIOC, GPIO_PIN_7);
+	TIM1_Cmd(ENABLE);
+}
+
+@far @interrupt void tim1Update(void)	{
+	TIM1_ClearITPendingBit(TIM1_IT_UPDATE);
+	if(position == targetPosition) motorDisable();
+	else {
+		if( position < targetPosition) {
+			if( position < MAXPOSITION ) {
+				GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
+				position++;
+			}
+			else motorDisable();
+		}
+		else if( position > targetPosition ) {
+			if( position > 0 ) {
+				GPIO_WriteLow(GPIOC, GPIO_PIN_5);
+				position--;
+			}
+			else motorDisable();
+		}
+	}
+}
+
 @far @interrupt void tim2Update(void)	{
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
 	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+	if( position != targetPosition && ( ( position < targetPosition && position < MAXPOSITION ) || ( position > targetPosition && position > 0 ) ) ) motorEnable();
 	
-	targetRpm = (float)abs(targetSpeed)*MAXRPM/127;
-	if(targetSpeed > 0) GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
-	else if(targetSpeed < 0) GPIO_WriteLow(GPIOC, GPIO_PIN_5);
-	if(currentRpm + acc <= targetRpm) currentRpm += acc;
-	else if(currentRpm - acc >= targetRpm) currentRpm -= acc;
-	
-	if(-MINRPM < currentRpm < MINRPM) {
-		TIM1_CtrlPWMOutputs(DISABLE); 
-	}
-	else {
-		TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // Установить скорость мотора
-		TIM1_CtrlPWMOutputs(ENABLE); 
-	}
-}
-
-void Delay(uint32_t t)	{
-	uint16_t i;
-	while(t>0) {
-		t--;
-		for(i=1000;i>0;i--);
-	}
+//	timerReload = motorSpeedK / targetRpm;
+//	TIM1_SetAutoreload(timerReload); // Установить скорость мотора
 }
 
 main()
@@ -93,6 +105,7 @@ main()
 	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER1, ENABLE);
 	GPIO_Init(GPIOB, GPIO_PIN_5, GPIO_MODE_OUT_PP_HIGH_FAST);
 	GPIO_Init(GPIOC, GPIO_PIN_5, GPIO_MODE_OUT_PP_HIGH_FAST);
+	GPIO_Init(GPIOC, GPIO_PIN_7, GPIO_MODE_OUT_PP_HIGH_FAST);
 	TIM1_DeInit();
 	TIM1_TimeBaseInit(	16000000/TIM1STEPSTO1SECOND,
 											TIM1_COUNTERMODE_UP,
@@ -131,11 +144,11 @@ main()
 	UART1_Cmd(ENABLE);
 	enableInterrupts();
 	
-	TIM1_SetAutoreload(TIM1STEPSTO1SECOND/200/16/currentRpm); // Установить скорость мотора
+	motorSpeedK = TIM1STEPSTO1SECOND;
+	motorSpeedK *= 60;
+	motorSpeedK /= MOTORSTEPSPERROTATION;
 
-	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
-	Delay(1000);
-	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+	TIM1_SetAutoreload(motorSpeedK/MAXRPM); // Установить скорость мотора
 
-	while (1) {}
+	while (1);
 }
