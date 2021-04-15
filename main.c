@@ -10,23 +10,22 @@
 #define TIM1STEPSTO1SECOND 32000
 #define MOTORSTEPSPERROTATION 3200
 #define MAXPOSITION 16000
-#define MAXRPM 1
+#define MAXRPM 15
 #define MINRPM 1
-#define CW 0 // Positive
-#define CCW 1 // Negative
+#define DEADZONE 0
+#define ACCELERATION 1
 
-float targetRpm = 60;
-float currentRpm = 0;
-uint8_t targetDir = CW;
-uint8_t currentDir = CW;
-int8_t targetSpeed = 0; // Main var
-int8_t currentSpeed = 0;
-float acc = 0.01;
-
-uint32_t position=0;
-uint32_t targetPosition=0;
-uint32_t timerReload;
+int8_t motorDirection = 0;
+int32_t position=0;
+float targetPosition=0;
+float kalmanPosition = 0;
+float kalmanPositionPrev = 0;
+float kalmanK = 0.02;
 uint32_t motorSpeedK;
+int16_t acc = 0;
+int16_t velocity = 0;
+uint16_t timerReload = 0;
+uint16_t controlVoltage = 0;
 
 void uartTransmit(uint8_t data){
 	while(!UART1_SR_TXE);
@@ -37,7 +36,7 @@ uint8_t receive = 0;
 @far @interrupt void uartReceive(void)	{
 	UART1_ClearITPendingBit(UART1_IT_RXNE);
 	receive=UART1_ReceiveData8();
-	targetPosition = receive * 100;
+	//targetPosition = receive * 100;
 	switch (receive)	{
 		case 1:
 		break;			
@@ -56,12 +55,12 @@ uint8_t receive = 0;
 		case 8:
 		break;
 	}
-	uartTransmit(receive);
+	uartTransmit(controlVoltage / 11);
 }
 
 void motorDisable(void) {
 	TIM1_Cmd(DISABLE);
-	GPIO_WriteHigh(GPIOC, GPIO_PIN_7);
+//	GPIO_WriteHigh(GPIOC, GPIO_PIN_7);
 }
 
 void motorEnable(void) {
@@ -69,32 +68,47 @@ void motorEnable(void) {
 	TIM1_Cmd(ENABLE);
 }
 
+void setMotorSpeed ( int16_t speed ) {
+	if ( speed > 0 ) {
+		TIM1_SetAutoreload( motorSpeedK / abs( speed ) );
+		GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
+		motorEnable();
+	}
+	else if ( speed < 0 ) {
+		TIM1_SetAutoreload( motorSpeedK / abs( speed ) );
+		GPIO_WriteLow(GPIOC, GPIO_PIN_5);
+		motorEnable();
+	}
+	else motorDisable();
+}
+
 @far @interrupt void tim1Update(void)	{
 	TIM1_ClearITPendingBit(TIM1_IT_UPDATE);
-	if(position == targetPosition) motorDisable();
-	else {
-		if( position < targetPosition) {
-			if( position < MAXPOSITION ) {
-				GPIO_WriteHigh(GPIOC, GPIO_PIN_5);
-				position++;
-			}
-			else motorDisable();
-		}
-		else if( position > targetPosition ) {
-			if( position > 0 ) {
-				GPIO_WriteLow(GPIOC, GPIO_PIN_5);
-				position--;
-			}
-			else motorDisable();
-		}
-	}
+	position += motorDirection;
 }
 
 @far @interrupt void tim2Update(void)	{
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
 	GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
-	if( position != targetPosition && ( ( position < targetPosition && position < MAXPOSITION ) || ( position > targetPosition && position > 0 ) ) ) motorEnable();
+
+	controlVoltage = ADC1_GetConversionValue();
+	targetPosition = (float)controlVoltage * 2.5;
 	
+	kalmanPositionPrev = kalmanPosition;
+	kalmanPosition = kalmanK * targetPosition + ( 1 - kalmanK ) * kalmanPositionPrev;
+	
+	if ( position > kalmanPosition - DEADZONE && position < kalmanPosition + DEADZONE ) {
+		motorDisable();
+		motorDirection = 0;
+	}
+	else {
+		velocity = ( kalmanPosition - position ) / 10;
+		if ( velocity > 0 ) motorDirection = 1;
+		if ( velocity < 0 ) motorDirection = -1;
+		if ( velocity > MAXRPM ) velocity = MAXRPM;
+		if ( velocity < -MAXRPM ) velocity = -MAXRPM;
+		setMotorSpeed ( velocity );
+	}
 //	timerReload = motorSpeedK / targetRpm;
 //	TIM1_SetAutoreload(timerReload); // Установить скорость мотора
 }
@@ -142,6 +156,18 @@ main()
 							UART1_MODE_TXRX_ENABLE);
 	UART1_ITConfig(	UART1_IT_RXNE, ENABLE);
 	UART1_Cmd(ENABLE);
+	ADC1_DeInit();
+	ADC1_Init(	ADC1_CONVERSIONMODE_CONTINUOUS,
+							ADC1_CHANNEL_3,
+							ADC1_PRESSEL_FCPU_D2,
+							ADC1_EXTTRIG_TIM,
+							DISABLE,
+							ADC1_ALIGN_RIGHT,
+							ADC1_SCHMITTTRIG_CHANNEL3,
+							DISABLE);
+	ADC1_Cmd(ENABLE);
+	ADC1_StartConversion();
+	
 	enableInterrupts();
 	
 	motorSpeedK = TIM1STEPSTO1SECOND;
